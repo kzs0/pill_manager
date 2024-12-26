@@ -16,36 +16,47 @@ type Handler struct {
 	Queries *sqlc.Queries
 }
 
-func (h *Handler) NewPerscription(ctx context.Context, rx *models.Prescription, user *models.User) (err error) {
+func (h *Handler) NewPerscription(ctx context.Context, rx *models.Prescription, uid string) (_ *models.Prescription, err error) {
 	ctx, done := koko.Operation(ctx, "handler_new_rx")
 	defer done(&ctx, &err)
 
+	medicationParams := sqlc.CreateMedicationParams{
+		ID:      uuid.NewString(),
+		Name:    rx.Medication.Name,
+		Generic: rx.Medication.Generic,
+		Brand:   rx.Medication.Brand,
+	}
+	medication, err := h.Queries.CreateMedication(ctx, medicationParams)
+	if err != nil {
+		return nil, err
+	}
+
 	sch, err := json.Marshal(&rx.Schedule)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	params := sqlc.CreateRxParams{
 		ID:             uuid.NewString(),
-		MedicationID:   rx.Medication.ID,
+		MedicationID:   medication.ID,
 		ScheduledStart: sql.NullInt64{Int64: rx.ScheduleStart.Unix()},
 		Refills:        int64(rx.Refills),
 		Doses:          int64(rx.Doses),
 		Schedule:       sch,
 	}
-	_, err = h.Queries.CreateRx(ctx, params)
+	prescription, err := h.Queries.CreateRx(ctx, params)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	regimenParams := sqlc.CreateRegimenParams{
 		ID:           uuid.NewString(),
-		MedicationID: rx.Medication.ID,
-		Patient:      user.ID,
+		MedicationID: medication.ID,
+		Patient:      uid,
 	}
 	regimen, err := h.Queries.CreateRegimen(ctx, regimenParams)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	t := rx.ScheduleStart
@@ -66,17 +77,44 @@ func (h *Handler) NewPerscription(ctx context.Context, rx *models.Prescription, 
 				}
 				_, err = h.Queries.CreateDose(ctx, dosesParams)
 				if err != nil {
-					return err
+					return nil, err
 				}
 
 				j++
 			}
 
-			t = t.Add(rx.Schedule.Period.Duration)
+			ttemp := t.Add(rx.Schedule.Period.Duration)
+			t = &ttemp
 		}
 	}
 
-	return nil
+	var schedule models.Schedule
+	err = json.Unmarshal(prescription.Schedule, &schedule)
+	if err != nil {
+		return nil, err
+	}
+
+	var start *time.Time
+	if prescription.ScheduledStart.Valid {
+		starttemp := time.Unix(prescription.ScheduledStart.Int64, 0)
+		start = &starttemp
+	}
+
+	rx = &models.Prescription{
+		ID: prescription.ID,
+		Medication: models.Medication{
+			ID:      medication.ID,
+			Name:    medication.Name,
+			Generic: medication.Generic,
+			Brand:   medication.Brand,
+		},
+		Doses:         int(prescription.Doses),
+		Refills:       int(prescription.Refills),
+		Schedule:      schedule,
+		ScheduleStart: start,
+	}
+
+	return rx, nil
 }
 
 func (h *Handler) MarkDoseTaken(ctx context.Context, id string) (err error) {
@@ -84,8 +122,8 @@ func (h *Handler) MarkDoseTaken(ctx context.Context, id string) (err error) {
 	defer done(&ctx, &err)
 
 	params := sqlc.MarkDoseTakenParams{
-		Taken:     sql.NullBool{Bool: true},
-		TimeTaken: sql.NullInt64{Int64: time.Now().Unix()},
+		Taken:     sql.NullBool{Bool: true, Valid: true},
+		TimeTaken: sql.NullInt64{Int64: time.Now().Unix(), Valid: true},
 		ID:        id,
 	}
 
@@ -97,34 +135,55 @@ func (h *Handler) MarkDoseTaken(ctx context.Context, id string) (err error) {
 	return nil
 }
 
-func (h *Handler) GetScheduledDoses(ctx context.Context, user *models.User) (_ []*models.Dose, err error) {
+func (h *Handler) GetScheduledDoses(ctx context.Context, uid string) (_ []models.Regimen, err error) {
 	ctx, done := koko.Operation(ctx, "handler_get_doses")
 	defer done(&ctx, &err)
 
-	rows, err := h.Queries.GetDosesByPatient(ctx, user.ID)
+	rows, err := h.Queries.GetDosesByPatient(ctx, uid)
 	if err != nil {
 		return nil, err
 	}
 
-	now := time.Now()
-	doses := make([]*models.Dose, 0, 3)
+	regimenMap := make(map[string]*models.Regimen, 0)
 	for _, row := range rows {
-		// Within a day of the dose scheduled time show
-		// TODO make configurable
-		if !row.Taken.Valid && time.Unix(row.Time, 0).Add(time.Hour*24).After(now) {
-			dose := models.Dose{
-				ID:     row.ID,
-				Time:   time.Unix(row.Time, 0),
-				Amount: row.Amount,
-				Unit:   row.Unit,
+
+		regimen, ok := regimenMap[row.ID_3]
+		if !ok {
+			med := models.Medication{
+				ID:      row.ID_2,
+				Name:    row.Name,
+				Generic: row.Generic,
+				Brand:   row.Brand,
 			}
-			doses = append(doses, &dose)
+
+			regimen = &models.Regimen{
+				ID:         row.ID_3,
+				PatientID:  uid,
+				Medication: med,
+				Doses:      make([]models.Dose, 0, 0),
+			}
+
+			regimenMap[row.ID_3] = regimen
 		}
 
-		if len(doses) >= 3 {
-			break
+		if row.Taken.Valid {
+			continue // skip
 		}
+
+		dose := models.Dose{
+			ID:     row.ID,
+			Time:   time.Unix(row.Time, 0),
+			Amount: row.Amount,
+			Unit:   row.Unit,
+		}
+
+		regimen.Doses = append(regimen.Doses, dose)
 	}
 
-	return doses, nil
+	regimens := make([]models.Regimen, 0, 0)
+	for _, regimen := range regimenMap {
+		regimens = append(regimens, *regimen)
+	}
+
+	return regimens, nil
 }

@@ -2,23 +2,21 @@ package manager
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/kzs0/kokoro/koko"
 	"github.com/kzs0/kokoro/telemetry/metrics"
 	"github.com/kzs0/pill_manager/models"
-	"github.com/kzs0/pill_manager/models/repositories"
+	"github.com/kzs0/pill_manager/models/db/sqlc"
 )
 
 type Controller struct {
-	Perscriptions *repositories.Perscriptions
-	Users         *repositories.Users
-	Handler       *Handler
+	Queries *sqlc.Queries
+	Handler *Handler
 }
 
 // TODO add user information
@@ -27,25 +25,13 @@ func (c *Controller) GetRemainingDoses(w http.ResponseWriter, r *http.Request) {
 	var err error
 	defer done(&ctx, &err)
 
-	uid := r.PathValue("id")
-	if uid == "" {
+	id := r.PathValue("id")
+	if id == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	id, err := strconv.ParseInt(uid, 10, 64)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	user, err := c.Users.Get(ctx, id)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	doses, err := c.Handler.GetScheduledDoses(ctx, user)
+	doses, err := c.Handler.GetScheduledDoses(ctx, id)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -70,27 +56,49 @@ func (c *Controller) GetPerscription(w http.ResponseWriter, r *http.Request) {
 	var err error
 	defer done(&ctx, &err)
 
-	sid := r.PathValue("id")
-	if sid == "" {
+	id := r.PathValue("id")
+	if id == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	id, err := strconv.ParseInt(sid, 10, 64)
+	rxdb, err := c.Queries.GetRx(ctx, id)
 	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	rx, err := c.Perscriptions.Get(ctx, id)
-	if err != nil {
-		if errors.Is(err, repositories.ErrPerscriptionNotFound) {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-
 		w.WriteHeader(http.StatusInternalServerError)
 		return
+	}
+
+	sch := models.Schedule{}
+	err = json.Unmarshal(rxdb.Schedule, &sch)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	var start *time.Time
+	if rxdb.ScheduledStart.Valid {
+		s := time.Unix(rxdb.ScheduledStart.Int64, 0)
+		start = &s
+	}
+
+	medicationdb, err := c.Queries.GetMedication(ctx, rxdb.MedicationID)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	rx := models.Prescription{
+		ID: rxdb.ID,
+		Medication: models.Medication{
+			ID:      medicationdb.ID,
+			Name:    medicationdb.Name,
+			Generic: medicationdb.Generic,
+			Brand:   medicationdb.Brand,
+		},
+		Schedule:      sch,
+		Doses:         int(rxdb.Doses),
+		Refills:       int(rxdb.Refills),
+		ScheduleStart: start,
 	}
 
 	payload, err := json.Marshal(&rx)
@@ -114,25 +122,13 @@ func (c *Controller) PostPerscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id, err := strconv.ParseInt(uid, 10, 64)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	user, err := c.Users.Get(ctx, id)
-	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
 	payload, err := io.ReadAll(r.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	rx := &models.Perscription{}
+	rx := &models.Prescription{}
 	err = json.Unmarshal(payload, rx)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -144,7 +140,7 @@ func (c *Controller) PostPerscription(w http.ResponseWriter, r *http.Request) {
 		rx.Schedule.Period = models.Duration{Duration: time.Hour * 24} // 1 day
 	}
 
-	err = c.Handler.NewPerscription(ctx, rx, user)
+	rx, err = c.Handler.NewPerscription(ctx, rx, uid)
 	if err != nil {
 		slog.Error("err %+v", err)
 
@@ -180,13 +176,18 @@ func (c *Controller) PostUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = c.Users.Put(ctx, user)
+	params := sqlc.CreateUserParams{
+		ID:   uuid.NewString(),
+		Name: user.Name,
+	}
+
+	userdb, err := c.Queries.CreateUser(ctx, params)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
-	payload, err = json.Marshal(&user)
+	payload, err = json.Marshal(&userdb)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -201,14 +202,8 @@ func (c *Controller) PostTaken(w http.ResponseWriter, r *http.Request) {
 	var err error
 	defer done(&ctx, &err)
 
-	sid := r.PathValue("id")
-	if sid == "" {
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	id, err := strconv.ParseInt(sid, 10, 64)
-	if err != nil {
+	id := r.PathValue("id")
+	if id == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}

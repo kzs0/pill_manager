@@ -9,7 +9,7 @@ VALUES (?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetDosesByPatient :many
-SELECT doses.*, medications.name as medication_name FROM doses
+SELECT doses.*, medications.*, regimens.* FROM doses
 INNER JOIN regimens ON doses.regimen_id = regimens.id
 INNER JOIN medications ON regimens.medication_id = medications.id
 WHERE regimens.patient = ?
@@ -25,12 +25,24 @@ INSERT INTO prescriptions (id, medication_id, scheduled_start, refills, doses, s
 VALUES (?, ?, ?, ?, ?, ?)
 RETURNING *;
 
+-- name: GetRx :one
+SELECT * FROM prescriptions
+WHERE id = ?;
+
 -- name: CreateMedication :one
 INSERT INTO medications (id, name, generic, brand)
 VALUES (?, ?, ?, ?)
 RETURNING *;
 
+-- name: GetMedication :one
+SELECT * FROM medications
+WHERE id = ?;
+
 -- name: CreateUser :one
 INSERT INTO users (id, name)
 VALUES (?, ?)
 RETURNING *;
+
+-- name: GetUser :one
+SELECT * FROM users
+WHERE id = ?;

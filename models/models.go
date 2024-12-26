@@ -8,7 +8,7 @@ type Prescription struct {
 	Schedule      Schedule
 	Doses         int
 	Refills       int
-	ScheduleStart time.Time
+	ScheduleStart *time.Time
 }
 
 type Medication struct {
@@ -21,8 +21,8 @@ type Medication struct {
 type Regimen struct {
 	ID         string
 	Medication Medication
-	Doses      []*Dose
-	Patient    User // 1:n associatation of remaining
+	Doses      []Dose
+	PatientID  string
 }
 
 type Dose struct {

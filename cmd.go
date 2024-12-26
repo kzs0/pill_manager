@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	_ "github.com/mattn/go-sqlite3"
+
 	"github.com/caarlos0/env/v11"
 	"github.com/kzs0/kokoro"
 	"github.com/kzs0/pill_manager/manager"
@@ -29,21 +31,21 @@ func main() {
 		panic(err)
 	}
 
-	ctx, done, err := kokoro.Init(kokoro.WithConfig(config.Koko))
+	_, done, err := kokoro.Init(kokoro.WithConfig(config.Koko))
 	defer done()
 	if err != nil {
 		slog.Error("failed to initialize kokoro", slog.Any("err", err))
 		panic(err)
 	}
 
-	db, err := sql.Open("sqlite3", ":memory:")
+	db, err := sql.Open("sqlite3", "manager.db")
 	if err != nil {
 		panic(err)
 	}
 
-	if _, err := db.ExecContext(ctx, ddl); err != nil {
-		panic(err)
-	}
+	// if _, err := db.ExecContext(ctx, ddl); err != nil {
+	// 	panic(err)
+	// }
 
 	queries := sqlc.New(db)
 
@@ -55,9 +57,8 @@ func main() {
 	}
 
 	controller := manager.Controller{
-		Perscriptions: rx,
-		Users:         users,
-		Handler:       &handler,
+		Queries: queries,
+		Handler: &handler,
 	}
 
 	mux := http.NewServeMux()
