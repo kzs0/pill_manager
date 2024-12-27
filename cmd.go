@@ -16,7 +16,8 @@ import (
 )
 
 type Config struct {
-	Koko kokoro.Config
+	Koko  kokoro.Config
+	Auth0 middleware.Auth0Config
 }
 
 // TODO remove/turn into a job
@@ -31,7 +32,7 @@ func main() {
 		panic(err)
 	}
 
-	_, done, err := kokoro.Init(kokoro.WithConfig(config.Koko))
+	ctx, done, err := kokoro.Init(kokoro.WithConfig(config.Koko))
 	defer done()
 	if err != nil {
 		slog.Error("failed to initialize kokoro", slog.Any("err", err))
@@ -43,9 +44,9 @@ func main() {
 		panic(err)
 	}
 
-	// if _, err := db.ExecContext(ctx, ddl); err != nil {
-	// 	panic(err)
-	// }
+	if _, err := db.ExecContext(ctx, ddl); err != nil {
+		panic(err)
+	}
 
 	queries := sqlc.New(db)
 
@@ -63,7 +64,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", controller.GetRoot)
-	mux.HandleFunc("GET /rx/remaining/{id}", controller.GetRemainingDoses)
+	mux.HandleFunc("GET /rx/remaining", controller.GetRemainingDoses)
 	mux.HandleFunc("GET /rx/{id}", controller.GetPerscription)
 	mux.HandleFunc("POST /rx/taken/{id}", controller.PostTaken)
 	mux.HandleFunc("POST /rx", controller.PostPerscription)
@@ -78,7 +79,9 @@ func main() {
 		Headers: []string{"Content-Type", "Authorization"},
 	}
 
-	corsMux := middleware.CORS(mux, opts)
+	userMux := middleware.ObserveNewUsers(mux, queries)
+	jwtMux := middleware.EnsureValidToken(userMux, config.Auth0)
+	corsMux := middleware.CORS(jwtMux, opts)
 
 	if err := http.ListenAndServe(":8080", corsMux); err != nil {
 		slog.Error("server failed", slog.Any("err", err))

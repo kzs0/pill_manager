@@ -43,6 +43,7 @@ func (h *Handler) NewPerscription(ctx context.Context, rx *models.Prescription, 
 		Refills:        int64(rx.Refills),
 		Doses:          int64(rx.Doses),
 		Schedule:       sch,
+		Patient:        uid,
 	}
 	prescription, err := h.Queries.CreateRx(ctx, params)
 	if err != nil {
@@ -50,9 +51,10 @@ func (h *Handler) NewPerscription(ctx context.Context, rx *models.Prescription, 
 	}
 
 	regimenParams := sqlc.CreateRegimenParams{
-		ID:           uuid.NewString(),
-		MedicationID: medication.ID,
-		Patient:      uid,
+		ID:             uuid.NewString(),
+		MedicationID:   medication.ID,
+		Patient:        uid,
+		PrescriptionID: prescription.ID,
 	}
 	regimen, err := h.Queries.CreateRegimen(ctx, regimenParams)
 	if err != nil {

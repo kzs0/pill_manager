@@ -1,6 +1,6 @@
 -- name: CreateRegimen :one
-INSERT INTO regimens (id, medication_id, patient)
-VALUES (?, ?, ?)
+INSERT INTO regimens (id, medication_id, patient, prescription_id)
+VALUES (?, ?, ?, ?)
 RETURNING *;
 
 -- name: CreateDose :one
@@ -21,8 +21,8 @@ SET taken = ?, time_taken = ?
 WHERE id = ?;
 
 -- name: CreateRx :one
-INSERT INTO prescriptions (id, medication_id, scheduled_start, refills, doses, schedule)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO prescriptions (id, medication_id, scheduled_start, refills, doses, schedule, patient)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetRx :one
@@ -39,8 +39,8 @@ SELECT * FROM medications
 WHERE id = ?;
 
 -- name: CreateUser :one
-INSERT INTO users (id, name)
-VALUES (?, ?)
+INSERT INTO users (id)
+VALUES (?)
 RETURNING *;
 
 -- name: GetUser :one

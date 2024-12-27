@@ -14,6 +14,7 @@ CREATE TABLE regimens(
     id TEXT PRIMARY KEY,
     medication_id TEXT NOT NULL, -- References Medication ID
     patient TEXT NOT NULL, -- References User ID
+    prescription_id TEXT NOT NULL, -- References Prescription ID
 
     FOREIGN KEY(medication_id) REFERENCES medications(id),
     FOREIGN KEY(patient) REFERENCES users(id)
@@ -24,10 +25,12 @@ CREATE TABLE prescriptions (
     medication_id TEXT NOT NULL, -- References Medication ID
     schedule BLOB NOT NULL, -- JSON schedule
     scheduled_start BIGINT, -- If Null, hasn't started
-    refills int NOT NULL,
-    doses int NOT NULL,
+    refills INT NOT NULL,
+    doses INT NOT NULL,
+    patient TEXT NOT NULL, -- References User ID
 
-    FOREIGN KEY(medication_id) REFERENCES medications(id)
+    FOREIGN KEY(medication_id) REFERENCES medications(id),
+    FOREIGN KEY(patient) REFERENCES users(id)
 );
 
 CREATE TABLE medications (
@@ -38,6 +41,5 @@ CREATE TABLE medications (
 );
 
 CREATE TABLE users (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL
+    id TEXT PRIMARY KEY
 );

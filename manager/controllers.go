@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	jwtmiddleware "github.com/auth0/go-jwt-middleware/v2"
+	"github.com/auth0/go-jwt-middleware/v2/validator"
 	"github.com/google/uuid"
 	"github.com/kzs0/kokoro/koko"
 	"github.com/kzs0/kokoro/telemetry/metrics"
@@ -25,13 +27,16 @@ func (c *Controller) GetRemainingDoses(w http.ResponseWriter, r *http.Request) {
 	var err error
 	defer done(&ctx, &err)
 
-	id := r.PathValue("id")
-	if id == "" {
-		w.WriteHeader(http.StatusBadRequest)
+	claims, ok := ctx.Value(jwtmiddleware.ContextKey{}).(*validator.ValidatedClaims)
+	if !ok {
+		slog.Error("missing jwt claims in context")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
-	doses, err := c.Handler.GetScheduledDoses(ctx, id)
+	uid := claims.RegisteredClaims.Subject
+
+	doses, err := c.Handler.GetScheduledDoses(ctx, uid)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -116,9 +121,16 @@ func (c *Controller) PostPerscription(w http.ResponseWriter, r *http.Request) {
 	var err error
 	defer done(&ctx, &err)
 
-	uid := r.Header.Get("uid")
+	claims, ok := ctx.Value(jwtmiddleware.ContextKey{}).(*validator.ValidatedClaims)
+	if !ok {
+		slog.Error("missing jwt claims in context")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	uid := claims.RegisteredClaims.Subject
 	if uid == "" {
-		w.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 
@@ -176,12 +188,7 @@ func (c *Controller) PostUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	params := sqlc.CreateUserParams{
-		ID:   uuid.NewString(),
-		Name: user.Name,
-	}
-
-	userdb, err := c.Queries.CreateUser(ctx, params)
+	userdb, err := c.Queries.CreateUser(ctx, uuid.NewString())
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return

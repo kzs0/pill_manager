@@ -32,15 +32,16 @@ type Prescription struct {
 	ScheduledStart sql.NullInt64
 	Refills        int64
 	Doses          int64
+	Patient        string
 }
 
 type Regimen struct {
-	ID           string
-	MedicationID string
-	Patient      string
+	ID             string
+	MedicationID   string
+	Patient        string
+	PrescriptionID string
 }
 
 type User struct {
-	ID   string
-	Name string
+	ID string
 }
