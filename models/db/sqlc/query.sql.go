@@ -11,16 +11,18 @@ import (
 )
 
 const createDose = `-- name: CreateDose :one
-INSERT INTO doses (id, regimen_id, time, amount, unit)
-VALUES (?, ?, ?, ?, ?)
-RETURNING id, regimen_id, time, amount, unit, taken, time_taken
+INSERT INTO
+    doses (id, regimen_id, refill, time, amount, unit)
+VALUES
+    (?, ?, ?, ?, ?, ?) RETURNING id, regimen_id, refill, time, amount, unit, taken, time_taken
 `
 
 type CreateDoseParams struct {
 	ID        string
 	RegimenID string
+	Refill    int64
 	Time      int64
-	Amount    int64
+	Amount    float64
 	Unit      string
 }
 
@@ -28,6 +30,7 @@ func (q *Queries) CreateDose(ctx context.Context, arg CreateDoseParams) (Dose, e
 	row := q.db.QueryRowContext(ctx, createDose,
 		arg.ID,
 		arg.RegimenID,
+		arg.Refill,
 		arg.Time,
 		arg.Amount,
 		arg.Unit,
@@ -36,6 +39,7 @@ func (q *Queries) CreateDose(ctx context.Context, arg CreateDoseParams) (Dose, e
 	err := row.Scan(
 		&i.ID,
 		&i.RegimenID,
+		&i.Refill,
 		&i.Time,
 		&i.Amount,
 		&i.Unit,
@@ -46,9 +50,10 @@ func (q *Queries) CreateDose(ctx context.Context, arg CreateDoseParams) (Dose, e
 }
 
 const createMedication = `-- name: CreateMedication :one
-INSERT INTO medications (id, name, generic, brand)
-VALUES (?, ?, ?, ?)
-RETURNING id, name, generic, brand
+INSERT INTO
+    medications (id, name, generic, brand)
+VALUES
+    (?, ?, ?, ?) RETURNING id, name, generic, brand
 `
 
 type CreateMedicationParams struct {
@@ -76,9 +81,10 @@ func (q *Queries) CreateMedication(ctx context.Context, arg CreateMedicationPara
 }
 
 const createRegimen = `-- name: CreateRegimen :one
-INSERT INTO regimens (id, medication_id, patient, prescription_id)
-VALUES (?, ?, ?, ?)
-RETURNING id, medication_id, patient, prescription_id
+INSERT INTO
+    regimens (id, medication_id, patient, prescription_id)
+VALUES
+    (?, ?, ?, ?) RETURNING id, medication_id, patient, prescription_id
 `
 
 type CreateRegimenParams struct {
@@ -106,9 +112,18 @@ func (q *Queries) CreateRegimen(ctx context.Context, arg CreateRegimenParams) (R
 }
 
 const createRx = `-- name: CreateRx :one
-INSERT INTO prescriptions (id, medication_id, scheduled_start, refills, doses, schedule, patient)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-RETURNING id, medication_id, schedule, scheduled_start, refills, doses, patient
+INSERT INTO
+    prescriptions (
+        id,
+        medication_id,
+        scheduled_start,
+        refills,
+        doses,
+        schedule,
+        patient
+    )
+VALUES
+    (?, ?, ?, ?, ?, ?, ?) RETURNING id, medication_id, schedule, scheduled_start, refills, doses, patient
 `
 
 type CreateRxParams struct {
@@ -145,30 +160,89 @@ func (q *Queries) CreateRx(ctx context.Context, arg CreateRxParams) (Prescriptio
 }
 
 const createUser = `-- name: CreateUser :one
-INSERT INTO users (id)
-VALUES (?)
-RETURNING id
+INSERT INTO
+    users (id, approved)
+VALUES
+    (?, false) RETURNING id, approved
 `
 
-func (q *Queries) CreateUser(ctx context.Context, id string) (string, error) {
+func (q *Queries) CreateUser(ctx context.Context, id string) (User, error) {
 	row := q.db.QueryRowContext(ctx, createUser, id)
-	err := row.Scan(&id)
-	return id, err
+	var i User
+	err := row.Scan(&i.ID, &i.Approved)
+	return i, err
+}
+
+const dosesTillEmpty = `-- name: DosesTillEmpty :one
+SELECT
+    count(*)
+FROM
+    doses
+WHERE
+    doses.regimen_id = ?
+    AND doses.taken IS NULL
+`
+
+func (q *Queries) DosesTillEmpty(ctx context.Context, regimenID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, dosesTillEmpty, regimenID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const dosesTillRefill = `-- name: DosesTillRefill :one
+SELECT
+    COUNT(*)
+FROM
+    doses
+WHERE
+    doses.regimen_id = ?
+    AND doses.taken IS NULL
+    AND doses.refill = (
+        SELECT
+            MIN(dose_inner.refill)
+        FROM
+            doses AS dose_inner
+        WHERE
+            dose_inner.regimen_id = ?
+            AND dose_inner.taken IS NULL
+    )
+`
+
+type DosesTillRefillParams struct {
+	RegimenID   string
+	RegimenID_2 string
+}
+
+func (q *Queries) DosesTillRefill(ctx context.Context, arg DosesTillRefillParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, dosesTillRefill, arg.RegimenID, arg.RegimenID_2)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const getDosesByPatient = `-- name: GetDosesByPatient :many
-SELECT doses.id, doses.regimen_id, doses.time, doses.amount, doses.unit, doses.taken, doses.time_taken, medications.id, medications.name, medications.generic, medications.brand, regimens.id, regimens.medication_id, regimens.patient, regimens.prescription_id FROM doses
-INNER JOIN regimens ON doses.regimen_id = regimens.id
-INNER JOIN medications ON regimens.medication_id = medications.id
-WHERE regimens.patient = ?
-ORDER BY doses.Time
+SELECT
+    doses.id, doses.regimen_id, doses.refill, doses.time, doses.amount, doses.unit, doses.taken, doses.time_taken,
+    medications.id, medications.name, medications.generic, medications.brand,
+    regimens.id, regimens.medication_id, regimens.patient, regimens.prescription_id
+FROM
+    doses
+    INNER JOIN regimens ON doses.regimen_id = regimens.id
+    INNER JOIN medications ON regimens.medication_id = medications.id
+WHERE
+    doses.taken IS NULL
+    AND regimens.patient = ?
+ORDER BY
+    doses.Time
 `
 
 type GetDosesByPatientRow struct {
 	ID             string
 	RegimenID      string
+	Refill         int64
 	Time           int64
-	Amount         int64
+	Amount         float64
 	Unit           string
 	Taken          sql.NullBool
 	TimeTaken      sql.NullInt64
@@ -194,6 +268,89 @@ func (q *Queries) GetDosesByPatient(ctx context.Context, patient string) ([]GetD
 		if err := rows.Scan(
 			&i.ID,
 			&i.RegimenID,
+			&i.Refill,
+			&i.Time,
+			&i.Amount,
+			&i.Unit,
+			&i.Taken,
+			&i.TimeTaken,
+			&i.ID_2,
+			&i.Name,
+			&i.Generic,
+			&i.Brand,
+			&i.ID_3,
+			&i.MedicationID,
+			&i.Patient,
+			&i.PrescriptionID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getDosesByPatientLimitBy = `-- name: GetDosesByPatientLimitBy :many
+SELECT
+    doses.id, doses.regimen_id, doses.refill, doses.time, doses.amount, doses.unit, doses.taken, doses.time_taken,
+    medications.id, medications.name, medications.generic, medications.brand,
+    regimens.id, regimens.medication_id, regimens.patient, regimens.prescription_id
+FROM
+    doses
+    INNER JOIN regimens ON doses.regimen_id = regimens.id
+    INNER JOIN medications ON regimens.medication_id = medications.id
+WHERE
+    doses.taken IS NULL
+    AND regimens.patient = ?
+ORDER BY
+    doses.Time
+LIMIT
+    ?
+`
+
+type GetDosesByPatientLimitByParams struct {
+	Patient string
+	Limit   int64
+}
+
+type GetDosesByPatientLimitByRow struct {
+	ID             string
+	RegimenID      string
+	Refill         int64
+	Time           int64
+	Amount         float64
+	Unit           string
+	Taken          sql.NullBool
+	TimeTaken      sql.NullInt64
+	ID_2           string
+	Name           string
+	Generic        bool
+	Brand          string
+	ID_3           string
+	MedicationID   string
+	Patient        string
+	PrescriptionID string
+}
+
+func (q *Queries) GetDosesByPatientLimitBy(ctx context.Context, arg GetDosesByPatientLimitByParams) ([]GetDosesByPatientLimitByRow, error) {
+	rows, err := q.db.QueryContext(ctx, getDosesByPatientLimitBy, arg.Patient, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetDosesByPatientLimitByRow
+	for rows.Next() {
+		var i GetDosesByPatientLimitByRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RegimenID,
+			&i.Refill,
 			&i.Time,
 			&i.Amount,
 			&i.Unit,
@@ -222,8 +379,12 @@ func (q *Queries) GetDosesByPatient(ctx context.Context, patient string) ([]GetD
 }
 
 const getMedication = `-- name: GetMedication :one
-SELECT id, name, generic, brand FROM medications
-WHERE id = ?
+SELECT
+    id, name, generic, brand
+FROM
+    medications
+WHERE
+    id = ?
 `
 
 func (q *Queries) GetMedication(ctx context.Context, id string) (Medication, error) {
@@ -239,8 +400,12 @@ func (q *Queries) GetMedication(ctx context.Context, id string) (Medication, err
 }
 
 const getRx = `-- name: GetRx :one
-SELECT id, medication_id, schedule, scheduled_start, refills, doses, patient FROM prescriptions
-WHERE id = ?
+SELECT
+    id, medication_id, schedule, scheduled_start, refills, doses, patient
+FROM
+    prescriptions
+WHERE
+    id = ?
 `
 
 func (q *Queries) GetRx(ctx context.Context, id string) (Prescription, error) {
@@ -259,20 +424,28 @@ func (q *Queries) GetRx(ctx context.Context, id string) (Prescription, error) {
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id FROM users
-WHERE id = ?
+SELECT
+    id, approved
+FROM
+    users
+WHERE
+    id = ?
 `
 
-func (q *Queries) GetUser(ctx context.Context, id string) (string, error) {
+func (q *Queries) GetUser(ctx context.Context, id string) (User, error) {
 	row := q.db.QueryRowContext(ctx, getUser, id)
-	err := row.Scan(&id)
-	return id, err
+	var i User
+	err := row.Scan(&i.ID, &i.Approved)
+	return i, err
 }
 
 const markDoseTaken = `-- name: MarkDoseTaken :exec
 UPDATE doses
-SET taken = ?, time_taken = ?
-WHERE id = ?
+SET
+    taken = ?,
+    time_taken = ?
+WHERE
+    id = ?
 `
 
 type MarkDoseTakenParams struct {

@@ -2,9 +2,11 @@ package manager
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	jwtmiddleware "github.com/auth0/go-jwt-middleware/v2"
@@ -21,7 +23,6 @@ type Controller struct {
 	Handler *Handler
 }
 
-// TODO add user information
 func (c *Controller) GetRemainingDoses(w http.ResponseWriter, r *http.Request) {
 	ctx, done := koko.Operation(r.Context(), "get_remaining_doses")
 	var err error
@@ -36,7 +37,53 @@ func (c *Controller) GetRemainingDoses(w http.ResponseWriter, r *http.Request) {
 
 	uid := claims.RegisteredClaims.Subject
 
-	doses, err := c.Handler.GetScheduledDoses(ctx, uid)
+	doses, err := c.Handler.GetScheduledDoses(ctx, uid, 1000)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	payload, err := json.Marshal(&doses)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Add("Content-Type", "application/json")
+	_, err = w.Write(payload)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+}
+
+func (c *Controller) GetLimitedRemainingDoses(w http.ResponseWriter, r *http.Request) {
+	ctx, done := koko.Operation(r.Context(), "get_limited_remaining_doses")
+	var err error
+	defer done(&ctx, &err)
+
+	claims, ok := ctx.Value(jwtmiddleware.ContextKey{}).(*validator.ValidatedClaims)
+	if !ok {
+		slog.Error("missing jwt claims in context")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	uid := claims.RegisteredClaims.Subject
+
+	countS := r.PathValue("count")
+	if countS == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	count, err := strconv.ParseInt(countS, 10, 32)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	doses, err := c.Handler.GetScheduledDoses(ctx, uid, int(count))
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -143,6 +190,7 @@ func (c *Controller) PostPerscription(w http.ResponseWriter, r *http.Request) {
 	rx := &models.Prescription{}
 	err = json.Unmarshal(payload, rx)
 	if err != nil {
+		slog.Warn("failed to unmarshal rx", "err", err, "payload", string(payload))
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -168,6 +216,50 @@ func (c *Controller) PostPerscription(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Add("Content-Type", "application/json")
 	w.Write(payload)
+}
+
+func (c *Controller) DosesTillEmpty(w http.ResponseWriter, r *http.Request) {
+	ctx, done := koko.Operation(r.Context(), "doses_till_empty")
+	var err error
+	defer done(&ctx, &err)
+
+	id := r.PathValue("id")
+	if id == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	doses, err := c.Queries.DosesTillEmpty(ctx, id)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	w.Write([]byte(fmt.Sprintf(`{"doses": %d}`, doses)))
+}
+
+func (c *Controller) DosesTillRefill(w http.ResponseWriter, r *http.Request) {
+	ctx, done := koko.Operation(r.Context(), "doses_till_refill")
+	var err error
+	defer done(&ctx, &err)
+
+	id := r.PathValue("id")
+	if id == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	arg := sqlc.DosesTillRefillParams{
+		RegimenID:   id,
+		RegimenID_2: id,
+	}
+	doses, err := c.Queries.DosesTillRefill(ctx, arg)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	w.Write([]byte(fmt.Sprintf(`{"doses": %d}`, doses)))
 }
 
 func (c *Controller) PostUser(w http.ResponseWriter, r *http.Request) {
@@ -205,7 +297,7 @@ func (c *Controller) PostUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *Controller) PostTaken(w http.ResponseWriter, r *http.Request) {
-	ctx, done := koko.Operation(r.Context(), "post_perscription")
+	ctx, done := koko.Operation(r.Context(), "post_taken")
 	var err error
 	defer done(&ctx, &err)
 
@@ -215,7 +307,79 @@ func (c *Controller) PostTaken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = c.Handler.MarkDoseTaken(ctx, id)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	payload := make(map[string]string, 1)
+	err = json.Unmarshal(body, &payload)
+	if err != nil {
+		slog.Error("failed to unmarshal payload", "err", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	if len(payload) == 0 || len(payload) > 1 {
+		slog.Warn("incorrect keys", "num_keys", len(payload))
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	t, err := time.Parse(time.RFC3339, payload["time"])
+	if err != nil {
+		slog.Warn("failed to parse time", "err", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	err = c.Handler.MarkDoseTaken(ctx, id, true, t)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+}
+
+func (c *Controller) PostSkipped(w http.ResponseWriter, r *http.Request) {
+	ctx, done := koko.Operation(r.Context(), "post_skipped")
+	var err error
+	defer done(&ctx, &err)
+
+	id := r.PathValue("id")
+	if id == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	payload := make(map[string]string, 1)
+	err = json.Unmarshal(body, &payload)
+	if err != nil {
+		slog.Error("failed to unmarshal payload", "err", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	if len(payload) == 0 || len(payload) > 1 {
+		slog.Warn("incorrect keys", "num_keys", len(payload))
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	t, err := time.Parse(time.RFC3339, payload["time"])
+	if err != nil {
+		slog.Warn("failed to parse time", "err", err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	err = c.Handler.MarkDoseTaken(ctx, id, false, t)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -226,8 +390,6 @@ func (c *Controller) GetRoot(w http.ResponseWriter, r *http.Request) {
 	ctx, done := koko.Operation(r.Context(), "get_root", metrics.WithLabelNames("test"))
 	var err error
 	defer done(&ctx, &err)
-
-	ctx = koko.Register(ctx, koko.Str("test", "test1"))
 
 	w.WriteHeader(http.StatusOK)
 }

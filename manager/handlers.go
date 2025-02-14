@@ -62,18 +62,19 @@ func (h *Handler) NewPerscription(ctx context.Context, rx *models.Prescription, 
 	}
 
 	t := rx.ScheduleStart
-	// +1 because we want i to not cause a multiplication to 0
-	for i := 1; i <= rx.Refills+1; i++ {
+	for i := 0; i <= rx.Refills; i++ {
 		for j := 0; j < rx.Doses; {
 			for _, dose := range rx.Schedule.Doses {
 				if j >= rx.Doses {
 					break
 				}
 
+				doseTime := t.Add(dose.DurationIntoPeriod.Duration)
 				dosesParams := sqlc.CreateDoseParams{
 					ID:        uuid.NewString(),
 					RegimenID: regimen.ID,
-					Time:      t.Add(time.Duration(i) * dose.DurationIntoPeriod.Duration).Unix(),
+					Refill:    int64(i),
+					Time:      doseTime.Unix(),
 					Amount:    dose.Amount,
 					Unit:      dose.Unit,
 				}
@@ -119,13 +120,13 @@ func (h *Handler) NewPerscription(ctx context.Context, rx *models.Prescription, 
 	return rx, nil
 }
 
-func (h *Handler) MarkDoseTaken(ctx context.Context, id string) (err error) {
+func (h *Handler) MarkDoseTaken(ctx context.Context, id string, taken bool, t time.Time) (err error) {
 	ctx, done := koko.Operation(ctx, "handler_mark_dose_taken")
 	defer done(&ctx, &err)
 
 	params := sqlc.MarkDoseTakenParams{
-		Taken:     sql.NullBool{Bool: true, Valid: true},
-		TimeTaken: sql.NullInt64{Int64: time.Now().Unix(), Valid: true},
+		Taken:     sql.NullBool{Bool: taken, Valid: true},
+		TimeTaken: sql.NullInt64{Int64: t.Unix(), Valid: true},
 		ID:        id,
 	}
 
@@ -137,18 +138,22 @@ func (h *Handler) MarkDoseTaken(ctx context.Context, id string) (err error) {
 	return nil
 }
 
-func (h *Handler) GetScheduledDoses(ctx context.Context, uid string) (_ []models.Regimen, err error) {
+func (h *Handler) GetScheduledDoses(ctx context.Context, uid string, limit int) (_ []models.Regimen, err error) {
 	ctx, done := koko.Operation(ctx, "handler_get_doses")
 	defer done(&ctx, &err)
 
-	rows, err := h.Queries.GetDosesByPatient(ctx, uid)
+	args := sqlc.GetDosesByPatientLimitByParams{
+		Patient: uid,
+		Limit:   int64(limit),
+	}
+
+	rows, err := h.Queries.GetDosesByPatientLimitBy(ctx, args)
 	if err != nil {
 		return nil, err
 	}
 
 	regimenMap := make(map[string]*models.Regimen, 0)
 	for _, row := range rows {
-
 		regimen, ok := regimenMap[row.ID_3]
 		if !ok {
 			med := models.Medication{
@@ -177,6 +182,7 @@ func (h *Handler) GetScheduledDoses(ctx context.Context, uid string) (_ []models
 			Time:   time.Unix(row.Time, 0),
 			Amount: row.Amount,
 			Unit:   row.Unit,
+			Refill: int(row.Refill),
 		}
 
 		regimen.Doses = append(regimen.Doses, dose)

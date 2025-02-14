@@ -11,8 +11,9 @@ import (
 type Dose struct {
 	ID        string
 	RegimenID string
+	Refill    int64
 	Time      int64
-	Amount    int64
+	Amount    float64
 	Unit      string
 	Taken     sql.NullBool
 	TimeTaken sql.NullInt64
@@ -43,5 +44,6 @@ type Regimen struct {
 }
 
 type User struct {
-	ID string
+	ID       string
+	Approved bool
 }

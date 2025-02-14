@@ -32,7 +32,7 @@ func main() {
 		panic(err)
 	}
 
-	ctx, done, err := kokoro.Init(kokoro.WithConfig(config.Koko))
+	_, done, err := kokoro.Init(kokoro.WithConfig(config.Koko))
 	defer done()
 	if err != nil {
 		slog.Error("failed to initialize kokoro", slog.Any("err", err))
@@ -44,15 +44,12 @@ func main() {
 		panic(err)
 	}
 
-	if _, err := db.ExecContext(ctx, ddl); err != nil {
-		panic(err)
-	}
+	// if _, err := db.ExecContext(context.Background(), ddl); err != nil {
+	// 	panic(err)
+	// }
 
 	queries := sqlc.New(db)
 
-	// rx := repositories.NewPerscriptions()
-	// users := repositories.NewUsers()
-	// doses := repositories.NewDoses()
 	handler := manager.Handler{
 		Queries: queries,
 	}
@@ -65,8 +62,12 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", controller.GetRoot)
 	mux.HandleFunc("GET /rx/remaining", controller.GetRemainingDoses)
+	mux.HandleFunc("GET /rx/remaining/{count}", controller.GetLimitedRemainingDoses)
 	mux.HandleFunc("GET /rx/{id}", controller.GetPerscription)
+	mux.HandleFunc("GET /rx/till_empty/{id}", controller.DosesTillEmpty)
+	mux.HandleFunc("GET /rx/till_refill/{id}", controller.DosesTillRefill)
 	mux.HandleFunc("POST /rx/taken/{id}", controller.PostTaken)
+	mux.HandleFunc("POST /rx/skipped/{id}", controller.PostSkipped)
 	mux.HandleFunc("POST /rx", controller.PostPerscription)
 	mux.HandleFunc("POST /user", controller.PostUser)
 	mux.HandleFunc("OPTIONS /rx", controller.Options)
@@ -79,7 +80,8 @@ func main() {
 		Headers: []string{"Content-Type", "Authorization"},
 	}
 
-	userMux := middleware.ObserveNewUsers(mux, queries)
+	approvedMux := middleware.BlockUnapprovedUsers(mux, queries)
+	userMux := middleware.ObserveNewUsers(approvedMux, queries)
 	jwtMux := middleware.EnsureValidToken(userMux, config.Auth0)
 	corsMux := middleware.CORS(jwtMux, opts)
 

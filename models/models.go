@@ -28,15 +28,16 @@ type Regimen struct {
 type Dose struct {
 	ID        string
 	Time      time.Time
-	Amount    int64
+	Amount    float64
 	Unit      string
 	Taken     *bool
+	Refill    int
 	TimeTaken *time.Time
 }
 
 type ScheduledDose struct {
 	DurationIntoPeriod Duration
-	Amount             int64
+	Amount             float64
 	Unit               string
 }
 

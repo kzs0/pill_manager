@@ -13,7 +13,7 @@ import (
 )
 
 type Auth0Config struct {
-	Audience string `env:"AUTH0_AUDIENCE" envDefault:"kenzo.us.auth0.com/api/v2"`
+	Audience string `env:"AUTH0_AUDIENCE" envDefault:"https://kenzo.us.auth0.com/api/v2/"`
 	Domain   string `env:"AUTH0_DOMAIN" envDefault:"kenzo.us.auth0.com"`
 }
 
